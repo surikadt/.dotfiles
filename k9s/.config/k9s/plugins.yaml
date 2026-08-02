@@ -1,0 +1,44 @@
+plugins:
+  # readOnly strips the built-in Shell along with Attach/Delete/Edit/Kill/Sanitize/Set-Image/Transfer
+  shell:
+    shortCut: x
+    description: Shell
+    scopes:
+      - pods
+    command: kubectl
+    background: false
+    args:
+      - exec
+      - -it
+      - -n
+      - $NAMESPACE
+      - --context
+      - $CONTEXT
+      - $NAME
+      - --
+      - sh
+      - -c
+      - "clear; (bash || ash || sh)"
+
+  # pods here run sidecars, so container scope picks the exact one
+  shell-container:
+    shortCut: b
+    description: Shell
+    scopes:
+      - containers
+    command: kubectl
+    background: false
+    args:
+      - exec
+      - -it
+      - -n
+      - $NAMESPACE
+      - --context
+      - $CONTEXT
+      - $POD
+      - -c
+      - $NAME
+      - --
+      - sh
+      - -c
+      - "clear; (bash || ash || sh)"

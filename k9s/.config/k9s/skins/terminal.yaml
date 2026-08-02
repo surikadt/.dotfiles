@@ -1,0 +1,114 @@
+k9s:
+  body:
+    fgColor: default
+    bgColor: default
+    logoColor: blue
+    logoColorMsg: default
+    logoColorInfo: green
+    logoColorWarn: yellow
+    logoColorError: red
+  prompt:
+    fgColor: default
+    bgColor: default
+    suggestColor: gray
+    border:
+      command: blue
+      default: gray
+  help:
+    fgColor: default
+    bgColor: default
+    sectionColor: blue
+    keyColor: blue
+    numKeyColor: blue
+  info:
+    fgColor: gray
+    sectionColor: default
+  dialog:
+    fgColor: default
+    bgColor: default
+    buttonFgColor: default
+    buttonBgColor: gray
+    buttonFocusFgColor: black
+    buttonFocusBgColor: blue
+    labelFgColor: yellow
+    fieldFgColor: default
+  frame:
+    border:
+      fgColor: gray
+      focusColor: blue
+    menu:
+      fgColor: default
+      keyColor: blue
+      numKeyColor: blue
+    crumbs:
+      fgColor: black
+      bgColor: gray
+      activeColor: blue
+    status:
+      newColor: blue
+      modifyColor: blue
+      addColor: green
+      pendingColor: yellow
+      errorColor: red
+      highlightColor: yellow
+      killColor: gray
+      completedColor: gray
+    title:
+      fgColor: default
+      bgColor: default
+      highlightColor: blue
+      counterColor: gray
+      filterColor: blue
+  views:
+    charts:
+      bgColor: default
+      dialBgColor: default
+      chartBgColor: default
+      focusFgColor: black
+      focusBgColor: blue
+      defaultDialColors:
+        - green
+        - red
+      defaultChartColors:
+        - green
+        - red
+      resourceColors:
+        cpu:
+          - blue
+          - navy
+        mem:
+          - yellow
+          - olive
+    table:
+      fgColor: default
+      bgColor: default
+      cursorFgColor: black
+      cursorBgColor: blue
+      markColor: yellow
+      header:
+        fgColor: silver
+        bgColor: default
+        sorterColor: blue
+        selectedSortColumnColor: default
+    xray:
+      fgColor: default
+      bgColor: default
+      cursorColor: blue
+      cursorTextColor: black
+      graphicColor: gray
+    yaml:
+      keyColor: blue
+      colonColor: gray
+      valueColor: default
+    picker:
+      mainColor: default
+      focusColor: blue
+      shortcutColor: blue
+    logs:
+      fgColor: default
+      bgColor: default
+      indicator:
+        fgColor: default
+        bgColor: default
+        toggleOnColor: green
+        toggleOffColor: gray

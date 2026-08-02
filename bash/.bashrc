@@ -17,6 +17,7 @@ unset rc
 . "$HOME/.cargo/env"
 export XDG_RUNTIME_DIR=/run/user/1000
 export AWS_VAULT_BACKEND=file
+export TCELL_TRUECOLOR=disable
 
 # system
 alias sdu="sudo dnf upgrade --refresh"

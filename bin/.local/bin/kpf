@@ -1,0 +1,284 @@
+#!/usr/bin/env bash
+# supervised kubectl port-forwards
+#
+# lens keeps status:"Active" on disk and re-renders it on reconnect without
+# respawning the kubectl child; kubectl pins one pod at spawn and never
+# re-resolves - neither shows up in a status flag, so health is an http request
+# through the tunnel
+#
+# config: ~/.config/kpf/forwards, one per line
+#   <local_port> <namespace> <service> [remote_port]
+#
+# env:
+#   KPF_CONFIG              config path (default ~/.config/kpf/forwards)
+#   KPF_PROBE_PATH          path the probe requests (default /kpf-probe)
+#   KPF_PROBE_INTERVAL      seconds between probes (default 15)
+#   KPF_CREDS_WAIT_MIN/MAX  credential retry backoff bounds (default 10/300)
+
+set -uo pipefail
+
+CONFIG="${KPF_CONFIG:-$HOME/.config/kpf/forwards}"
+STATE="${XDG_RUNTIME_DIR:-/tmp}/kpf"
+PROBE_INTERVAL="${KPF_PROBE_INTERVAL:-15}"
+PROBE_PATH="${KPF_PROBE_PATH:-/kpf-probe}"
+CREDS_WAIT_MIN="${KPF_CREDS_WAIT_MIN:-10}"
+CREDS_WAIT_MAX="${KPF_CREDS_WAIT_MAX:-300}"
+
+mkdir -p "$STATE"
+
+die() { echo "kpf: $*" >&2; exit 1; }
+warn() { echo "kpf: $*" >&2; }
+
+lookup() {
+    local want="$1"
+    [ -r "$CONFIG" ] || die "no config at $CONFIG"
+    awk -v want="$want" '
+        /^[[:space:]]*(#|$)/ { next }
+        $1 == want || $3 == want || $3 == $2 "-" want {
+            print $1, $2, $3, ($4 ? $4 : 8080); found=1; exit
+        }
+        END { exit !found }
+    ' "$CONFIG"
+}
+
+# lookup's exit status is lost through $(...) and read succeeds on the blank line
+# it leaves, so a miss surfaces only as empty output
+# sets R_* instead of printing: inside $(...) die would exit only the subshell
+resolve() {
+    local spec; spec=$(lookup "$1")
+    [ -n "$spec" ] || die "'$1' not in $CONFIG"
+    read -r R_PORT R_NS R_SVC R_REMOTE <<<"$spec"
+}
+
+all_ports() {
+    [ -r "$CONFIG" ] || die "no config at $CONFIG"
+    awk '/^[[:space:]]*(#|$)/ { next } { print $1 }' "$CONFIG"
+}
+
+owner_pid() {
+    ss -tlnpH "sport = :$1" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | head -1
+}
+
+# ss omits the pid for root-owned sockets, but the cgroup is readable without
+# root and names the container outright
+owner() {
+    local line; line=$(ss -tlnpeH "sport = :$1" 2>/dev/null | head -1)
+    [ -n "$line" ] || return 0
+
+    local cg; cg=$(grep -oP 'cgroup:\S*docker-\K[0-9a-f]+' <<<"$line")
+    if [ -n "$cg" ]; then
+        local name; name=$(docker inspect -f '{{.Name}}' "$cg" 2>/dev/null | sed 's|^/||')
+        echo "container ${name:-$cg}"
+        return 0
+    fi
+
+    local comm; comm=$(grep -oP 'users:\(\("\K[^"]+' <<<"$line")
+    case "$comm" in
+        kubectl|kubefwd|socat) echo "forward $comm" ;;
+        *) echo "other ${comm:-unknown}" ;;
+    esac
+}
+
+is_forwarder() {
+    [ "$(owner "$1" | cut -d' ' -f1)" = forward ]
+}
+
+# any http reply counts, 404 included - a dead tunnel accepts the connection and
+# closes with no bytes, which a socket check reads as healthy
+probe() {
+    local port="$1"
+    timeout 4 bash -c '
+        exec 3<>/dev/tcp/127.0.0.1/'"$port"' || exit 1
+        printf "GET '"$PROBE_PATH"' HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3
+        IFS= read -r -t 3 line <&3 || exit 1
+        case "$line" in HTTP/*) exit 0 ;; *) exit 1 ;; esac
+    ' 2>/dev/null
+}
+
+supervise() {
+    local port="$1" ns="$2" svc="$3" remote="$4"
+    local log="$STATE/$port.log"
+    local fails=0
+    local backoff=$CREDS_WAIT_MIN
+
+    while true; do
+        if ! kubectl get --raw /version >/dev/null 2>&1; then
+            echo "$(date -Is) waiting for cluster credentials, next check in ${backoff}s" >>"$log"
+            sleep "$backoff"
+            [ "$backoff" -lt "$CREDS_WAIT_MAX" ] && backoff=$((backoff * 2))
+            continue
+        fi
+        backoff=$CREDS_WAIT_MIN
+
+        echo "$(date -Is) starting forward $ns/$svc $port:$remote" >>"$log"
+        kubectl -n "$ns" port-forward "svc/$svc" "$port:$remote" \
+            --address 127.0.0.1 >>"$log" 2>&1 &
+        local child=$!
+
+        sleep 3
+        fails=0
+        while kill -0 "$child" 2>/dev/null; do
+            if probe "$port"; then
+                fails=0
+            else
+                fails=$((fails + 1))
+                echo "$(date -Is) probe failed ($fails)" >>"$log"
+                # a single miss is usually a pod mid-rollout
+                if [ "$fails" -ge 2 ]; then
+                    echo "$(date -Is) tunnel dead, restarting" >>"$log"
+                    kill "$child" 2>/dev/null
+                    break
+                fi
+            fi
+            sleep "$PROBE_INTERVAL"
+        done
+
+        wait "$child" 2>/dev/null
+        sleep 2
+    done
+}
+
+free_port() {
+    local port="$1"
+    # an empty port would leave the ss filter as "sport = :" and match anything
+    [[ "$port" =~ ^[0-9]+$ ]] || die "'$port' is not a port"
+    local own; own=$(owner "$port")
+    [ -n "$own" ] || return 0
+    if ! is_forwarder "$port"; then
+        warn ":$port held by ${own% *} '${own#* }' -- refusing to kill"
+        return 1
+    fi
+    local pid; pid=$(owner_pid "$port")
+    kill "$pid" 2>/dev/null
+    for _ in $(seq 10); do
+        [ -z "$(owner_pid "$port")" ] && return 0
+        sleep 0.2
+    done
+    kill -9 "$pid" 2>/dev/null
+    return 0
+}
+
+cmd_up() {
+    resolve "$1"
+    local port="$R_PORT" ns="$R_NS" svc="$R_SVC" remote="$R_REMOTE"
+
+    if [ -f "$STATE/$port.pid" ] && kill -0 "$(cat "$STATE/$port.pid")" 2>/dev/null; then
+        echo "kpf: $svc already supervised on :$port"
+        return 0
+    fi
+
+    local own; own=$(owner "$port")
+    if [ -n "$own" ] && ! is_forwarder "$port"; then
+        echo "kpf: :$port held by ${own% *} '${own#* }' -- skipping $svc"
+        return 0
+    fi
+    [ -n "$own" ] && free_port "$port"
+
+    setsid "$0" __supervise "$port" "$ns" "$svc" "$remote" </dev/null >/dev/null 2>&1 &
+    local pid=$!
+    echo "$pid" >"$STATE/$port.pid"
+    printf '%s %s %s\n' "$ns" "$svc" "$remote" >"$STATE/$port.meta"
+    echo "kpf: forwarding $ns/$svc -> localhost:$port"
+}
+
+cmd_down() {
+    local port
+    if [[ "$1" =~ ^[0-9]+$ ]]; then
+        port="$1"
+    else
+        resolve "$1"; port="$R_PORT"
+    fi
+
+    local pid pidfile="$STATE/$port.pid"
+    if [ -f "$pidfile" ]; then
+        pid=$(cat "$pidfile")
+        # supervisor has its own session - kill the group to take the child too
+        kill -TERM -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null
+    else
+        # XDG_RUNTIME_DIR is wiped on last logout, taking the pidfile with it
+        # brackets stop the pattern matching a shell that quotes it
+        for pid in $(pgrep -f "__supervis[e] $port " 2>/dev/null); do
+            warn "adopting orphaned supervisor $pid on :$port"
+            kill -TERM -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null
+        done
+    fi
+    rm -f "$pidfile" "$STATE/$port.meta"
+    free_port "$port" || return 1
+    echo "kpf: stopped :$port"
+}
+
+cmd_status() {
+    printf '%-6s %-34s %-10s %s\n' PORT SERVICE SUPERVISOR HEALTH
+    local port
+    for port in $(all_ports); do
+        local svc="-" sup="stopped" health="-"
+        [ -f "$STATE/$port.meta" ] && read -r _ svc _ <"$STATE/$port.meta"
+        if [ -f "$STATE/$port.pid" ] && kill -0 "$(cat "$STATE/$port.pid")" 2>/dev/null; then
+            sup="running"
+        fi
+        local own; own=$(owner "$port")
+        if [ -n "$own" ] && ! is_forwarder "$port"; then
+            health="local:${own#* }"
+        elif probe "$port"; then
+            health="ok"
+        elif [ -n "$own" ]; then
+            health="DEAD(bound)"
+        else
+            health="closed"
+        fi
+        printf '%-6s %-34s %-10s %s\n' "$port" "$svc" "$sup" "$health"
+    done
+}
+
+usage() {
+    cat <<'EOF'
+kpf -- supervised kubectl port-forwards
+
+  kpf up   <port|service|all>   start supervised forward(s)
+  kpf down <port|service|all>   stop forward(s)
+  kpf restart <port|service|all>
+  kpf status                    live health, probed end-to-end
+  kpf free <port>               drop a forward holding a port (leaves local apps alone)
+  kpf logs <port|service>
+
+services match by port, full name, or name without the namespace prefix
+
+config: ~/.config/kpf/forwards
+EOF
+}
+
+case "${1:-}" in
+    __supervise) shift; supervise "$@" ;;
+    up)
+        [ $# -ge 2 ] || die "usage: kpf up <port|service|all>"
+        if [ "$2" = all ]; then
+            for p in $(all_ports); do cmd_up "$p"; done
+        else
+            shift; for t in "$@"; do cmd_up "$t"; done
+        fi
+        ;;
+    down)
+        [ $# -ge 2 ] || die "usage: kpf down <port|service|all>"
+        if [ "$2" = all ]; then
+            for p in $(all_ports); do cmd_down "$p"; done
+        else
+            shift; for t in "$@"; do cmd_down "$t"; done
+        fi
+        ;;
+    restart)
+        [ $# -ge 2 ] || die "usage: kpf restart <port|service|all>"
+        "$0" down "$2" >/dev/null; "$0" up "$2"
+        ;;
+    status|ls|"") cmd_status ;;
+    free)
+        [ $# -ge 2 ] || die "usage: kpf free <port>"
+        free_port "$2"
+        ;;
+    logs)
+        [ $# -ge 2 ] || die "usage: kpf logs <port|service>"
+        resolve "$2"
+        tail -f "$STATE/$R_PORT.log"
+        ;;
+    -h|--help|help) usage ;;
+    *) usage; exit 1 ;;
+esac

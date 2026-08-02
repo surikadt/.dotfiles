@@ -1,0 +1,10 @@
+k9s:
+  readOnly: true
+  defaultView: "pods bridget"
+  ui:
+    skin: terminal
+    logoless: true
+    splashless: true
+  logger:
+    tail: 1000
+    disableAutoscroll: true
