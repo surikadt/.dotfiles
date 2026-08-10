@@ -2,6 +2,7 @@ akmod-nvidia
 alacritty
 atool
 awscli2
+bat
 brightnessctl
 btop
 calibre
@@ -26,6 +27,7 @@ gitk
 golang
 graphviz
 helm
+jq
 k9s
 kernel-devel
 kernel-headers
@@ -40,7 +42,6 @@ lutris
 make
 mangohud
 mpv
-nautilus
 noip
 nvidia-container-toolkit
 nvidia-settings
@@ -69,6 +70,7 @@ tbb
 tldr
 tlp
 tlp-rdw
+udisks2
 vips
 wireguard-tools
 xclip

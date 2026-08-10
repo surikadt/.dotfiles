@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=lf
+Comment=Browse directories in the terminal
+Exec=alacritty -e lf %f
+Terminal=false
+NoDisplay=true
+MimeType=inode/directory;

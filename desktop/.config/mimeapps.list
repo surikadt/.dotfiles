@@ -2,6 +2,9 @@
 
 [Default Applications]
 
+# directories
+inode/directory=lf.desktop
+
 # text and code
 text/plain=nvim.desktop
 text/csv=nvim.desktop

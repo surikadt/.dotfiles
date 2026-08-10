@@ -1,0 +1,99 @@
+#!/usr/bin/python3
+# org.freedesktop.FileManager1 provider backed by lf
+#
+# "Open containing folder" in browsers, qBittorrent, Telegram etc. is a call on
+# this bus name, not an xdg-open on the directory.
+#
+# env:
+#   LF_FM1_TERMINAL   argv prefix that runs a command (default "alacritty -e")
+#   LF_FM1_IDLE       seconds to linger before exiting (default 30)
+
+import os
+import shlex
+import subprocess
+import sys
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+TERMINAL = shlex.split(os.environ.get("LF_FM1_TERMINAL", "alacritty -e"))
+IDLE = int(os.environ.get("LF_FM1_IDLE", "30"))
+
+# ShowItemProperties is part of the interface and callers may invoke it, so it
+# has to be answered; lf has no properties dialog, so it selects the item too.
+NODE = Gio.DBusNodeInfo.new_for_xml("""
+<node>
+  <interface name='org.freedesktop.FileManager1'>
+    <method name='ShowFolders'>
+      <arg type='as' name='URIs' direction='in'/>
+      <arg type='s' name='StartupId' direction='in'/>
+    </method>
+    <method name='ShowItems'>
+      <arg type='as' name='URIs' direction='in'/>
+      <arg type='s' name='StartupId' direction='in'/>
+    </method>
+    <method name='ShowItemProperties'>
+      <arg type='as' name='URIs' direction='in'/>
+      <arg type='s' name='StartupId' direction='in'/>
+    </method>
+  </interface>
+</node>
+""")
+
+loop = GLib.MainLoop()
+idle_source = None
+
+
+def rearm_idle():
+    global idle_source
+    if idle_source is not None:
+        GLib.source_remove(idle_source)
+    idle_source = GLib.timeout_add_seconds(IDLE, lambda: (loop.quit(), False)[1])
+
+
+def spawn(uris):
+    for uri in uris:
+        path = Gio.File.new_for_uri(uri).get_path()
+        if path is None:
+            print(f"not a local path: {uri}", file=sys.stderr)
+            continue
+        # lf takes one cd-or-select-path: a dir is entered, a file is selected
+        # in its parent, which is exactly the two methods' semantics
+        subprocess.Popen([*TERMINAL, "lf", "--", path], start_new_session=True)
+
+
+def on_call(_conn, _sender, _path, _iface, method, params, invocation):
+    if method in ("ShowFolders", "ShowItems", "ShowItemProperties"):
+        spawn(params[0])
+        invocation.return_value(None)
+    else:
+        invocation.return_error_literal(
+            Gio.dbus_error_quark(), Gio.DBusError.UNKNOWN_METHOD, method
+        )
+    rearm_idle()
+
+
+def on_bus_acquired(conn, _name):
+    conn.register_object_with_closures2(
+        "/org/freedesktop/FileManager1", NODE.interfaces[0], on_call, None, None
+    )
+
+
+def on_name_lost(conn, name):
+    # conn is None when the session bus itself is unreachable
+    print(f"could not take {name}" if conn else f"lost {name}", file=sys.stderr)
+    sys.exit(1)
+
+
+Gio.bus_own_name(
+    Gio.BusType.SESSION,
+    "org.freedesktop.FileManager1",
+    Gio.BusNameOwnerFlags.NONE,
+    on_bus_acquired,
+    None,
+    on_name_lost,
+)
+rearm_idle()
+loop.run()

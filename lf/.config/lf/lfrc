@@ -34,6 +34,68 @@ cmd unarchive ${{ aunpack -- "$f"; }}
 # Trash via gio (spaces/collisions/restore-safe)
 cmd trash ${{ printf '%s\n' "$fx" | xargs -d '\n' -r gio trash --; }}
 
+# Default paste renames a colliding target to name.~1~ without saying so
+cmd paste ${{
+    buf="${XDG_DATA_HOME:-$HOME/.local/share}/lf/files"
+    [ -s "$buf" ] || exit
+    mode=$(sed -n 1p "$buf")
+
+    clashes=$(sed 1d "$buf" | while IFS= read -r src; do
+        name=${src##*/}
+        { [ -e "$name" ] || [ -L "$name" ]; } && printf '%s\n' "$name"
+    done)
+
+    act=o
+    if [ -n "$clashes" ]; then
+        printf '%s\n' "$clashes" | head -n 10
+        printf '%s already here -- [o]verwrite / [k]eep both / [s]kip / [c]ancel: ' \
+            "$(printf '%s\n' "$clashes" | wc -l)"
+        read -r act
+    fi
+    case $act in
+        o|k|s) ;;
+        *) lf -remote "send $id echo \"paste cancelled\""; exit ;;
+    esac
+
+    uniq_name() {
+        case $1 in
+            ?*.*) stem=${1%.*}; ext=.${1##*.} ;;
+            *)    stem=$1; ext= ;;
+        esac
+        n=1
+        while [ -e "$stem ($n)$ext" ] || [ -L "$stem ($n)$ext" ]; do n=$((n+1)); done
+        printf '%s' "$stem ($n)$ext"
+    }
+
+    err=$(mktemp)
+    sed 1d "$buf" | while IFS= read -r src; do
+        [ -e "$src" ] || [ -L "$src" ] || continue
+        dst=${src##*/}
+        if [ -e "$dst" ] || [ -L "$dst" ]; then
+            [ "$act" = s ] && continue
+            # pasting into the source's own dir would make cp overwrite its input
+            { [ "$act" = k ] || [ "$src" = "$PWD/$dst" ]; } && dst=$(uniq_name "$dst")
+        fi
+        case $mode in
+            # -T merges into an existing dir instead of nesting a copy inside it
+            copy) cp -rT --reflink=auto -- "$src" "$dst" 2>>"$err" ;;
+            move)
+                if [ -d "$dst" ] && [ ! -L "$dst" ]; then
+                    # mv refuses a non-empty dir as target, so merge then drop the source
+                    cp -rT --reflink=auto -- "$src" "$dst" 2>>"$err" && rm -rf -- "$src"
+                else
+                    mv -fT -- "$src" "$dst" 2>>"$err"
+                fi
+                ;;
+        esac
+    done
+
+    [ -s "$err" ] && lf -remote "send $id echoerr \"$(head -1 "$err" | tr '\n"\\' '   ')\""
+    rm -f "$err"
+    lf -remote "send clear"
+    lf -remote "send $id reload"
+}}
+
 # Types are sniffed by content: a .json holding one object per line is ndjson, an empty file is inode/x-empty
 cmd open &{{
     mime=$(file --mime-type -Lb "$f")
@@ -75,6 +137,117 @@ for l in sys.stdin.read().splitlines():
     fi
 }}
 
+cmd devices ${{
+    list=$(lsblk -J -o PATH,NAME,LABEL,SIZE,MOUNTPOINT,FSTYPE,HOTPLUG,TYPE,MODEL 2>/dev/null | jq -r '
+      .blockdevices[]
+      | ((.model // "") | sub("\\s+$"; "")) as $model
+      | recurse(.children[]?)
+      | select(.hotplug and .fstype != null and .fstype != "swap")
+      | [ (.mountpoint // ""), .path,
+          ((.label // .name) + "  " + .size
+            + (if $model == "" then "" else "  " + $model end)
+            + (if .mountpoint then "  → " + .mountpoint else "  [not mounted]" end))
+        ] | @tsv')
+
+    for d in "/run/user/$(id -u)/gvfs"/* "$HOME/.gvfs"/*; do
+        [ -d "$d" ] && list="$list
+$(printf '%s\t\t%s  [gvfs]' "$d" "${d##*/}")"
+    done
+
+    list=$(printf '%s\n' "$list" | sed '/^$/d')
+    [ -z "$list" ] && { lf -remote "send $id echoerr \"no external devices\""; exit; }
+
+    sel=$(printf '%s\n' "$list" | fzf --reverse --delimiter='\t' --with-nth=3 --header='External devices')
+    [ -z "$sel" ] && exit
+    mp=$(printf '%s' "$sel" | cut -f1)
+    dev=$(printf '%s' "$sel" | cut -f2)
+
+    if [ -z "$mp" ]; then
+        if command -v udisksctl >/dev/null 2>&1; then
+            out=$(udisksctl mount -b "$dev" 2>&1)
+        elif command -v gio >/dev/null 2>&1; then
+            out=$(gio mount -d "$dev" 2>&1)
+        else
+            out="neither udisksctl nor gio found"
+        fi
+        # udisksctl's "Mounted X at Y" wording varies by version and Y may contain spaces
+        mp=$(lsblk -J -o MOUNTPOINT "$dev" 2>/dev/null | jq -r '.blockdevices[0].mountpoint // ""')
+        [ -z "$mp" ] && {
+            lf -remote "send $id echoerr \"$(printf '%s' "$out" | tr '\n"\\' '   ')\""
+            exit
+        }
+    fi
+
+    mp=$(printf '%s' "$mp" | sed 's/\\/\\\\/g;s/"/\\"/g')
+    lf -remote "send $id cd \"$mp\""
+}}
+
+# Media root differs per distro: /run/media/$USER on systemd, /media/$USER elsewhere
+cmd media-dir ${{
+    for d in "/run/media/$(id -un)" "/media/$(id -un)" /run/media /media /mnt; do
+        [ -d "$d" ] && [ -n "$(ls -A "$d" 2>/dev/null)" ] && {
+            lf -remote "send $id cd \"$d\""
+            exit
+        }
+    done
+    lf -remote "send $id echoerr \"no media root with mounts\""
+}}
+
+cmd eject ${{
+    list=$(lsblk -J -o PATH,NAME,LABEL,SIZE,MOUNTPOINT,FSTYPE,HOTPLUG,TYPE,MODEL 2>/dev/null | jq -r '
+      .blockdevices[]
+      | ((.model // "") | sub("\\s+$"; "")) as $model
+      | recurse(.children[]?)
+      | select(.hotplug and .mountpoint != null)
+      | [ .mountpoint, .path,
+          ((.label // .name) + "  " + .size
+            + (if $model == "" then "" else "  " + $model end)
+            + "  → " + .mountpoint)
+        ] | @tsv')
+
+    for d in "/run/user/$(id -u)/gvfs"/* "$HOME/.gvfs"/*; do
+        [ -d "$d" ] && list="$list
+$(printf '%s\t\t%s  [gvfs]' "$d" "${d##*/}")"
+    done
+
+    list=$(printf '%s\n' "$list" | sed '/^$/d')
+    [ -z "$list" ] && { lf -remote "send $id echoerr \"nothing mounted to eject\""; exit; }
+
+    sel=$(printf '%s\n' "$list" | fzf --reverse --delimiter='\t' --with-nth=3 --header='Eject')
+    [ -z "$sel" ] && exit
+    mp=$(printf '%s' "$sel" | cut -f1)
+    dev=$(printf '%s' "$sel" | cut -f2)
+
+    if [ -z "$dev" ]; then
+        out=$(gio mount -u "$mp" 2>&1)
+    else
+        out=$(udisksctl unmount -b "$dev" 2>&1) && {
+            parent=$(lsblk -J -o PKNAME "$dev" 2>/dev/null | jq -r '.blockdevices[0].pkname // ""')
+            if [ -n "$parent" ] && [ -z "$(lsblk -J -o MOUNTPOINT "/dev/$parent" 2>/dev/null |
+                jq -r '[.blockdevices[] | recurse(.children[]?) | .mountpoint] | map(select(. != null)) | .[]')" ]; then
+                err=$(udisksctl power-off -b "/dev/$parent" 2>&1)
+                out="${err:-$out safe to unplug}"
+            fi
+        }
+    fi
+    lf -remote "send $id echo \"$(printf '%s' "$out" | tr '\n"\\' '   ')\""
+}}
+
+# fzf drives ripgrep instead of filtering its output, so the search is the pattern
+# and not a fuzzy match over one frozen result set
+cmd fzf_grep ${{
+    rg="rg --column --line-number --no-heading --color=always --smart-case --hidden --glob '!.git'"
+    res=$(fzf --ansi --disabled --reverse --delimiter=: \
+        --bind "start:reload:[ -n {q} ] && $rg -- {q} || true" \
+        --bind "change:reload:sleep 0.1; [ -n {q} ] && $rg -- {q} || true" \
+        --preview 'bat --color=always --style=numbers --highlight-line {2} -- {1}' \
+        --preview-window '+{2}/2' \
+        --header='Search file contents')
+    [ -z "$res" ] && exit
+    res=$(printf '%s' "$res" | cut -d: -f1 | sed 's/\\/\\\\/g;s/"/\\"/g')
+    lf -remote "send $id select \"$res\""
+}}
+
 cmd fzf_jump ${{
     res="$(find . 2>/dev/null | fzf --reverse --header='Jump to location')"
     if [ -n "$res" ]; then
@@ -92,7 +265,12 @@ cmd fzf_jump ${{
 map m
 map au unarchive
 map <c-f> :fzf_jump
+map <c-g> :fzf_grep
 map Cp copy-file
+map ge devices
+map gE media-dir
+# lf's own cwd pins the device busy, and a remote cd would only run after eject returns
+map X :cd ~; eject
 
 # Basic Functions
 map . set hidden!
