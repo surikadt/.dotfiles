@@ -23,10 +23,6 @@ export TCELL_TRUECOLOR=disable
 alias sdu="sudo dnf upgrade --refresh"
 alias fu="flatpak update"
 
-# tooling
-alias glog="git log --oneline --graph"
-alias lzd="lazydocker"
-
 # python venv
 function va() {
     if [ "$#" -eq 0 ]; then
@@ -40,10 +36,25 @@ function va() {
 
 # fzf and create sessions
 bind '"\C-a\C-f":"tmxs\n"'
+# direnv
+eval "$(direnv hook bash)"
+# fzf: navigable Ctrl-R history + Ctrl-T files + completion
+eval "$(fzf --bash)"
 
 # jupyter notebook
 function jp() {
-	va
+    if [[ $# -gt 0 ]]; then
+    case "$1" in
+      -a)
+        va
+        ;;
+      *)
+        echo "Unknown option: $1"
+        return 1
+        ;;
+    esac
+	fi
+
     jupyter notebook
 }
 
@@ -55,10 +66,3 @@ tmxs() {
 
 
 . "/home/surikadt/.local/share/bob/env/env.sh"
-
-# direnv
-eval "$(direnv hook bash)"
-
-
-# fzf: navigable Ctrl-R history + Ctrl-T files + completion
-eval "$(fzf --bash)"
