@@ -14,10 +14,10 @@ inode/x-empty=nvim.desktop
 application/x-zerosize=nvim.desktop
 
 # web
-text/html=one.ablaze.floorp.desktop
-application/xhtml+xml=one.ablaze.floorp.desktop
-x-scheme-handler/http=one.ablaze.floorp.desktop
-x-scheme-handler/https=one.ablaze.floorp.desktop
+text/html=librewolf.desktop
+application/xhtml+xml=librewolf.desktop
+x-scheme-handler/http=librewolf.desktop
+x-scheme-handler/https=librewolf.desktop
 
 # spreadsheets
 application/vnd.openxmlformats-officedocument.spreadsheetml.sheet=sc-im.desktop

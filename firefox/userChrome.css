@@ -1,0 +1,19 @@
+#TabsToolbar { display: none !important; }
+#sidebar-panel-header { display: none !important; }
+#sidebar-box { padding-inline-start: 0px !important; }
+
+* { border-radius: 0px !important; }
+
+
+:root {
+  --toolbar-bgcolor: #0f0f0f !important;
+  --lwt-accent-color: #0f0f0f !important;
+  --lwt-selected-tab-background-color: #0f0f0f !important;
+}
+
+#nav-bar,
+#PersonalToolbar,
+#TabsToolbar {
+  background-color: #0f0f0f !important;
+  box-shadow: none !important;
+}

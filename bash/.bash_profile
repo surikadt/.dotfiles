@@ -14,7 +14,7 @@ export ECORE_IMF_MODULE=fcitx
 export SDL_IM_MODULE=fcitx
 export XMODIFIERS=@im=fcitx
 export EDITOR=nvim
-export BROWSER=one.ablaze.floorp
+export BROWSER=librewolf
 # history: drop dups and space-prefixed (secret) commands
 export HISTCONTROL=ignoreboth
 

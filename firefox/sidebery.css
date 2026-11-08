@@ -1,0 +1,26 @@
+#root.root {--tabs-notification-badge-count-fg: #f4decd;}
+#root.root {--tabs-progress-bg: #f4decd;}
+#root.root {--tabs-activated-fg: #f4decd;}
+#root.root {--tabs-normal-fg: #f4decd;}
+#root.root {--tabs-activated-bg: #0f0f0f;}
+#root.root {--frame-bg: #0f0f0f;}
+#root.root {--toolbar-bg: #0f0f0f;}
+#root.root {--tabs-inner-gap: 8px;}
+#root.root {--general-border-radius: 0px;}
+
+.Tab[data-active="true"] .body {
+	border: 2px solid #ef944dff !important;
+	border-radius: 0px;
+}
+
+.NavigationBar .main-items .nav-item[data-class="panel"] .name-box {
+	border-width: 2px !important;
+}
+
+#root[data-act-el-color-scheme="dark"] {
+	--active-el-shadow: none;
+}
+
+.NavigationBar .nav-item[data-active="true"] {
+	border: 1px solid #ef944dff !important;
+}
